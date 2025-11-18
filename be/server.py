@@ -2,6 +2,7 @@ from typing import List, Optional
 import os
 import csv
 import random
+from venv import logger
 
 from fastapi import FastAPI, HTTPException
 
@@ -26,8 +27,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY_3")
 # MODEL = "deepseek/deepseek-chat-v3-0324:free"
 # MODEL = "google/gemini-2.5-pro-exp-03-25:free"
 MODEL = "meta-llama/llama-4-maverick:free"
-PAGES_CONST = ["Utc2Confessions.csv", "Utc2NoiChiaSeCamXuc.csv",
-            "Utc2Zone.csv", "DienDanNgheSVNoi.csv"]
+PAGES_CONST = ["Utc2Confessions.csv", "Utc2Zone.csv","Utc2NoiChiaSeCamXuc.csv",
+             "DienDanNgheSVNoi.csv"]
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -95,24 +96,27 @@ def get_data(path):
                 posts.append(post)
             except Exception as e:
                 continue
+        
+        print(f"Loaded {len(posts)} posts from {path}")
     return posts
 
 
 @app.get("/posts")
 async def get_posts(page: Optional[int] = 1,
-                    limit: Optional[int] = 10,
-                    selected_page: Optional[int] = None,
+                    limit: Optional[int] = 30,
+                    selected_page: Optional[int] = 0,
                     topic: Optional[str] = None,
                     tag: Optional[str] = None,
                     start_date: Optional[str] = None,
                     end_date: Optional[str] = None):
+    print(f"Fetching posts with page={page}, limit={limit}, selected_page={selected_page}, topic={topic}, tag={tag}, start_date={start_date}, end_date={end_date}")
     try:
         # Initialize with empty list in case of errors
         all_posts = []
         
         try:
             # Get initial data
-            all_posts = get_data(PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
+            all_posts = get_data(PAGES_CONST[selected_page] if selected_page is not None else PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
             print(f"Loaded {len(all_posts)} posts initially")
         except Exception as e:
             print(f"Error loading initial data: {e}")
@@ -127,7 +131,7 @@ async def get_posts(page: Optional[int] = 1,
         # Pages
         if selected_page is not None:
             try:
-                all_posts = get_data(PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
+                all_posts = get_data(PAGES_CONST[selected_page] if selected_page is not None else PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
             except Exception as e:
                 print(f"Error loading page data: {e}")
 
@@ -219,7 +223,7 @@ async def get_posts(page: Optional[int] = 1,
         except Exception as e:
             print(f"Error in pagination: {e}")
             paginated_posts = all_posts[:limit]  # Fallback to first page
-
+        print(f"Returning page {page} with limit {limit}")
         return {
             "message": "Get posts successfully",
             "total": len(all_posts),
@@ -239,7 +243,7 @@ async def get_posts(page: Optional[int] = 1,
 def sentiment_post(request: Optional[List[PostRequest]] = None):
     try:
         if not request:
-            request = get_data(PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
+            request = get_data(PAGES_CONST[selected_page] if selected_page is not None else PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
 
         # Load the sentiment analysis model
         model_path = "fine_tuned_model"  # Path to your fine-tuned model
@@ -408,7 +412,7 @@ def summarize_shool(request: List[PostRequest]):
 def get_post_by_id(post_id: int):
     try:
         # Load data from CSV file
-        all_posts = get_data(PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
+        all_posts = get_data(PAGES_CONST[selected_page] if selected_page is not None else PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
 
         # Check if post_id is within range
         if post_id < 0 or post_id >= len(all_posts):
@@ -423,10 +427,14 @@ def get_post_by_id(post_id: int):
 
 
 @app.get("/sentiment-trend")
-async def get_sentiment_trend(start_date: Optional[str] = None, end_date: Optional[str] = None, topic: Optional[str] = None):
+async def get_sentiment_trend(
+                    selectedPage: Optional[int] = 0,
+                    start_date: Optional[str] = None, end_date: Optional[str] = None,
+                    topic: Optional[str] = None):
     try:
+        print(f"Fetching sentiment trend with selected_page={selectedPage}, start_date={start_date}, end_date={end_date}, topic={topic}")
         # Load data from CSV file
-        all_posts = get_data(PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
+        all_posts = get_data(PAGES_CONST[selectedPage] if selectedPage is not None else PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
         print(f"Loaded {len(all_posts)} posts for sentiment trend")
 
         # Load the sentiment analysis model
