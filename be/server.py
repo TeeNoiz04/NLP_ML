@@ -3,7 +3,9 @@ import os
 import csv
 import random
 from venv import logger
-
+from datetime import datetime, timedelta, timezone
+from dateutil.parser import isoparse
+import logging
 from fastapi import FastAPI, HTTPException
 
 from openai import OpenAI
@@ -13,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from dateutil.parser import parse
 
-from models import PostRequest
+from models import PostRequest, SentimentRequestBody
 
 # Import the functions directly from utils.py
 from untils import *
@@ -100,6 +102,23 @@ def get_data(path):
         print(f"Loaded {len(posts)} posts from {path}")
     return posts
 
+def format_to_iso_string(dt_obj: datetime) -> str:
+    """Chuyển đổi đối tượng datetime có tzinfo thành chuỗi ISO 8601,
+       đảm bảo định dạng .000Z."""
+    
+    # 1. Chuyển về UTC (để chắc chắn)
+    dt_utc = dt_obj.astimezone(timezone.utc)
+    
+    # 2. Format: %Y-%m-%dT%H:%M:%S.xxxZ
+    # Python 3.6+ sử dụng 'isoformat' và thay thế microsecond (vi phần triệu giây)
+    # thành milisecond (phần nghìn giây) và thêm 'Z'.
+    
+    # Lấy chuỗi ISO cơ bản (ví dụ: '2024-00-01T00:00:00.000000+00:00')
+    iso_str = dt_utc.isoformat(timespec='milliseconds')
+    
+    # Thay thế múi giờ '+00:00' bằng 'Z' (Zulu time)
+    return iso_str.replace('+00:00', 'Z')
+
 
 @app.get("/posts")
 async def get_posts(page: Optional[int] = 1,
@@ -113,7 +132,7 @@ async def get_posts(page: Optional[int] = 1,
     try:
         # Initialize with empty list in case of errors
         all_posts = []
-        
+        # Pages
         try:
             # Get initial data
             all_posts = get_data(PAGES_CONST[selected_page] if selected_page is not None else PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
@@ -127,21 +146,14 @@ async def get_posts(page: Optional[int] = 1,
                 "limit": limit,
                 "posts": []
             }
-
-        # Pages
-        if selected_page is not None:
-            try:
-                all_posts = get_data(PAGES_CONST[selected_page] if selected_page is not None else PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
-            except Exception as e:
-                print(f"Error loading page data: {e}")
-
+    
         # For backward compatibility, use tag parameter if provided and topic is not
-        search_term = tag if tag and not topic else None
-
-        # Filter by tag if that's what we're using (old method)
-        if search_term:
-            all_posts = [post for post in all_posts if search_term in post.text]
-            print(f"After tag filtering: {len(all_posts)} posts")
+        # search_term = tag if tag and not topic else None
+        # print(f"11 Using search_term: {search_term}")
+        # # Filter by tag if that's what we're using (old method)
+        # if search_term:
+        #     all_posts = [post for post in all_posts if search_term in post.text]
+        #     print(f"After tag filtering: {len(all_posts)} posts")
 
         # Load topic model for all posts
         topic_model, topic_tokenizer, device = load_topic_model()
@@ -160,7 +172,7 @@ async def get_posts(page: Optional[int] = 1,
                     post_dict = post.dict()
                     post_dict["topic"] = "LABEL_2"  # Default to "student" if analysis fails
                     all_posts[all_posts.index(post)] = PostRequest(**post_dict)
-
+       
         # Filter by topic if provided (new method)
         if topic:
             try:
@@ -240,10 +252,10 @@ async def get_posts(page: Optional[int] = 1,
 
 
 @app.post("/sentiment")
-def sentiment_post(request: Optional[List[PostRequest]] = None):
+def sentiment_post(body: SentimentRequestBody):
     try:
-        if not request:
-            request = get_data(PAGES_CONST[selected_page] if selected_page is not None else PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
+        if not body.data:
+            body.data = get_data(PAGES_CONST[body.selectedPage] if body.selectedPage is not None else PAGES_CONST[random.randint(0, len(PAGES_CONST) - 1)])
 
         # Load the sentiment analysis model
         model_path = "fine_tuned_model"  # Path to your fine-tuned model
@@ -258,7 +270,7 @@ def sentiment_post(request: Optional[List[PostRequest]] = None):
         negative_sentences = []
         neutral_sentences = []
 
-        for post in request:
+        for post in body.data:
             # Preprocess the text with special character and number removal
             processed_text = preprocess_text(
                 post.text,
@@ -407,7 +419,7 @@ def summarize_shool(request: List[PostRequest]):
 
     return comments[random_integer]
 
-
+# Hàm này bị lỗi
 @app.get("/post/{post_id}")
 def get_post_by_id(post_id: int):
     try:
@@ -429,7 +441,8 @@ def get_post_by_id(post_id: int):
 @app.get("/sentiment-trend")
 async def get_sentiment_trend(
                     selectedPage: Optional[int] = 0,
-                    start_date: Optional[str] = None, end_date: Optional[str] = None,
+                    start_date: Optional[str] = None, 
+                    end_date: Optional[str] = None,
                     topic: Optional[str] = None):
     try:
         print(f"Fetching sentiment trend with selected_page={selectedPage}, start_date={start_date}, end_date={end_date}, topic={topic}")
@@ -449,43 +462,57 @@ async def get_sentiment_trend(
 
         # Sort posts by time
         all_posts.sort(key=lambda post: post.time)
+        print("Sorted posts by time", all_posts[0].time, all_posts[1].time)
 
-        # Parse date parameters
         if start_date:
             try:
-                start_datetime = datetime.strptime(start_date, "%Y-%m-%d")
-                start_datetime = start_datetime.replace(tzinfo=timezone.utc)
-            except ValueError as e:
-                print(f"Invalid start date format: {e}")
-                start_datetime = datetime.now(timezone.utc) - timedelta(days=365)
+                # Sử dụng isoparse để xử lý định dạng ISO 8601 linh hoạt
+                start_datetime = isoparse(start_date)
+                
+                # Đảm bảo nó được chuyển về múi giờ UTC nếu nó chưa có tzinfo 
+                # (isoparse thường làm điều này nếu có 'Z', nhưng ta nên chuẩn hóa)
+                if start_datetime.tzinfo is None:
+                    start_datetime = start_datetime.replace(tzinfo=timezone.utc)
+                    
+            except Exception as e:
+                logging.error(f"Invalid start date format: {e} for input: {start_date}")
+                # Mặc định về 5 năm trước nếu có lỗi
+                start_datetime = datetime.now(timezone.utc) - timedelta(days=365*5)
         else:
-            # Default to 1 year ago
-            start_datetime = datetime.now(timezone.utc) - timedelta(days=365)
+            # Default to 5 years ago
+            start_datetime = datetime.now(timezone.utc) - timedelta(days=365*5)
 
         if end_date:
             try:
-                end_datetime = datetime.strptime(end_date, "%Y-%m-%d")
-                end_datetime = end_datetime.replace(hour=23, minute=59, second=59, microsecond=999999)
-                end_datetime = end_datetime.replace(tzinfo=timezone.utc)
-            except ValueError as e:
-                print(f"Invalid end date format: {e}")
+                # Sử dụng isoparse
+                end_datetime = isoparse(end_date)
+                
+                # Đảm bảo nó được chuyển về múi giờ UTC
+                if end_datetime.tzinfo is None:
+                    end_datetime = end_datetime.replace(tzinfo=timezone.utc)
+                    
+                # Lưu ý: Nếu input là chuỗi ngày giờ (có thời gian), không cần thêm 23:59:59
+                # Nếu muốn đảm bảo lấy hết cả ngày nếu input CHỈ là ngày ('YYYY-MM-DD'),
+                # thì bạn cần kiểm tra chuỗi input. 
+                
+            except Exception as e:
+                logging.error(f"Invalid end date format: {e} for input: {end_date}")
+                # Mặc định về hiện tại nếu có lỗi
                 end_datetime = datetime.now(timezone.utc)
-        else:
-            # Default to now
-            end_datetime = datetime.now(timezone.utc)
-
-        print(f"Date range: {start_datetime} to {end_datetime}")
-
+            else:
+                # Default to now
+                end_datetime = datetime.now(timezone.utc)
+      
         # Filter posts within the time period
         relevant_posts = [
             post for post in all_posts 
             if start_datetime <= post.time <= end_datetime
         ]
-        print(f"Found {len(relevant_posts)} posts in date range")
-
+        
         # Filter by topic if provided
         if topic:
             try:
+                print(f"Filtering by topic: {topic}")
                 # Load topic model
                 topic_model, topic_tokenizer, device = load_topic_model()
                 if topic_model and topic_tokenizer:
@@ -495,7 +522,7 @@ async def get_sentiment_trend(
                         if result and result["topic"] == topic:
                             filtered_posts.append(post)
                     relevant_posts = filtered_posts
-                    print(f"After topic filtering: {len(relevant_posts)} posts")
+                   
             except Exception as e:
                 print(f"Error in topic filtering: {e}")
 
@@ -554,7 +581,7 @@ async def get_sentiment_trend(
 
         # Sort by date (ascending)
         result.sort(key=lambda x: datetime.strptime(x["day"], "%m/%Y"))
-
+        
         return {
             "message": "Sentiment trend data retrieved successfully",
             "data": result

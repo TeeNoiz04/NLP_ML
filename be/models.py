@@ -1,7 +1,7 @@
 from pydantic import BaseModel, HttpUrl
 from datetime import datetime
 from typing import Optional
-
+from typing import List, Optional, Any
 
 class PostRequest(BaseModel):
     text: str
@@ -15,3 +15,7 @@ class PostRequest(BaseModel):
 
 class BatchPostRequest(BaseModel):
     texts: list[PostRequest]
+
+class SentimentRequestBody(BaseModel):
+    data: List[PostRequest] 
+    selectedPage: Optional[int] = 0 # Thêm tham số int bạn cần
