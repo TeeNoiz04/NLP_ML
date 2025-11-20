@@ -2,7 +2,8 @@ import axios from "axios";
 import { useEffect, useState } from "react";
 import EmotionStats from "./components/EmotionStats";
 import Loading from "./components/Loading";
-import PostList from "./components/PostList"; // Import the new PostList component
+import PostList from "./components/PostList";
+import SentimentCard from "./components/SentimentCard";
 import { MagnifyingGlassIcon } from "@heroicons/react/24/solid";
 
 const initialPages = [
@@ -38,7 +39,7 @@ export default function FilterConfession() {
   const [isLoadingData, setIsLoadingData] = useState(false);
 
   const [selectedPage, setSelectedPage] = useState(0);
-  const [selectedTopic, setSelectedTopic] = useState(""); // Changed from selectedTag to selectedTopic
+  const [selectedTopic, setSelectedTopic] = useState(""); 
   const [startDate, setStartDate] = useState(undefined);
   const [endDate, setEndDate] = useState(undefined);
   const [error, setError] = useState("");
@@ -76,21 +77,22 @@ export default function FilterConfession() {
 
   // Fetch data function
   const fetchData = async () => {
+    console.log("Starting data fetch...");
     setIsLoadingData(true);
     setError("");
     try {
-      console.log("Fetching data with parameters: " + selectedPage );
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      console.log("Fetching data with parameters: " + selectedPage);
       const response = await axios.get(`${API_URL}/posts`, {
         params: {
           page: 1,
           limit: 50,
           selected_page: selectedPage,
-          topic: selectedTopic, // Changed from tag to topic
+          topic: selectedTopic,
           start_date: startDate,
           end_date: endDate,
         },
       });
+      console.log("Data fetch successful:", response.data);
       setData(response.data.posts);
     } catch (err) {
       setError("Lỗi kết nối: " + err.message);
@@ -103,7 +105,7 @@ export default function FilterConfession() {
     setIsLoadingOverView(true);
     setError("");
     try {
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
       const response = await axios.post(`${API_URL}/school-summary-2`, data);
       setOverViewContent(response.data);
     } catch (err) {
@@ -114,12 +116,13 @@ export default function FilterConfession() {
   };
 
   const shoolSentiment = async () => {
+    console.log("Starting sentiment analysis fetch...");
     setIsLoadingSentiment(true);
     setError("");
     try {
-      console.log("Sending data for sentiment analysis:", data);
-      const response = await axios.post(`${API_URL}/sentiment`, data);
-      if (response.data && typeof response.data === 'object') {
+      const response = await axios.post(`${API_URL}/sentiment`, { data: data, selectedPage: selectedPage });
+      if ((response.data && typeof response.data === 'object')) {
+        console.log("Received sentiment analysis response11:", response.data);
         setSentimentContent(response.data);
       } else {
         console.error('Invalid response format:', response.data);
@@ -133,28 +136,47 @@ export default function FilterConfession() {
     }
   };
 
-  // UseEffect to fetch data on dependency change
-  const handleSearch = () => {
-    fetchData();
+  const handleSearch = async () => {
+    console.log("Handling search...");
+    const newData = await fetchData();
+    if (newData && newData.total == 0) {
+      console.log("No data available after fetch.");
+      setSentimentContent({
+        positive: [],
+        negative: [],
+        neutral: []
+      });
+    }
   };
+  // Fetch initial data on component mount
+  useEffect(() => {
+    console.log("Fetching initial data on component mount...");
+    fetchData();
+  }, []);
 
   // Trigger shoolOverview whenever `data` is updated
   useEffect(() => {
+    console.log("Data updated, triggering overview and sentiment fetch... --- data length:", data.length);
     if (data.length > 0) {
       shoolOverview();
       shoolSentiment();
+    }else if (data.length === 0) {
+      console.log("Data is empty, clearing overview and sentiment content.");
+      setOverViewContent("Không có bài viết nào trong khoảng thời gian đã chọn.");
+      setSentimentContent({
+        positive: [],
+        negative: [],
+        neutral: []
+      });
     }
+
   }, [data]);
 
-  // Fetch initial data on component mount
-  useEffect(() => {
-    fetchData();
-  }, []);
+
 
   return (
     <div className="max-w-6xl mx-auto bg-white shadow-lg rounded-lg overflow-hidden">
       {/* Header */}
-
       <div className="bg-gradient-to-r from-pink-500 via-purple-500 to-indigo-600 py-6 px-8 rounded-xl shadow-md">
         <h1 className="text-3xl font-bold text-white">NLP & ML</h1>
         <p className="text-pink-100 mt-2">
@@ -220,6 +242,7 @@ export default function FilterConfession() {
       {/* Filter Section - All in one row */}
       <div className="p-6 bg-gray-50 border-b">
         <div className="flex flex-wrap items-end space-x-4">
+          {/* Page */}
           <div className="flex-1 min-w-0">
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Page
@@ -304,7 +327,7 @@ export default function FilterConfession() {
               )}
             </div>
           </div>
-
+          {/* Start time */}
           <div className="flex-1 min-w-0">
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Từ ngày
@@ -316,7 +339,7 @@ export default function FilterConfession() {
               onChange={(e) => setStartDate(e.target.value)}
             />
           </div>
-
+          {/* End time */}
           <div className="flex-1 min-w-0">
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Đến ngày
@@ -328,7 +351,7 @@ export default function FilterConfession() {
               onChange={(e) => setEndDate(e.target.value)}
             />
           </div>
-
+          {/* Topic selection */}
           <div className="flex-1 min-w-0">
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Chủ đề
@@ -346,8 +369,7 @@ export default function FilterConfession() {
               ))}
             </select>
           </div>
-
-
+          {/* Search Button */}
           <div>
             <button
               className="px-6 py-2 text-white rounded-lg bg-gradient-to-r from-pink-500 to-orange-400 hover:from-pink-600 hover:to-orange-500 focus:outline-none focus:ring-2 focus:ring-pink-400 focus:ring-offset-1 transition shadow-md"
@@ -357,9 +379,7 @@ export default function FilterConfession() {
               {isLoadingData ? "Đang tải..." : "Tìm kiếm"}
             </button>
           </div>
-
         </div>
-
         {error && (
           <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-lg">
             {error}
@@ -372,8 +392,8 @@ export default function FilterConfession() {
         <button
           onClick={() => setActiveView("sentiment")}
           className={`flex-1 py-3 text-center font-medium text-sm relative transition-colors duration-300 ${activeView === "sentiment"
-              ? "text-pink-600"
-              : "text-gray-500 hover:text-gray-700"
+            ? "text-pink-600"
+            : "text-gray-500 hover:text-gray-700"
             }`}
         >
           Phân tích cảm xúc
@@ -385,8 +405,8 @@ export default function FilterConfession() {
         <button
           onClick={() => setActiveView("posts")}
           className={`flex-1 py-3 text-center font-medium text-sm relative transition-colors duration-300 ${activeView === "posts"
-              ? "text-pink-600"
-              : "text-gray-500 hover:text-gray-700"
+            ? "text-pink-600"
+            : "text-gray-500 hover:text-gray-700"
             }`}
         >
           Danh sách bài viết
@@ -399,77 +419,28 @@ export default function FilterConfession() {
       {/* Conditional View Content */}
       {activeView === "sentiment" ? (
         <>
-          {sentimentContent && !isLoadingSentiment && (() => {
-            const total =
-              sentimentContent.positive.length +
-              sentimentContent.negative.length +
-              sentimentContent.neutral.length;
+          {console.log("Tab sentiment Rendering Sentiment Analysis View", sentimentContent)},
+          {/* Sentiment Summary Cards */}
+          {!isLoadingSentiment && (() => {
+            let percentPositive, percentNegative, percentNeutral;
+            let numPositive, numNegative, numNeutral, total;
+            total =
+              (sentimentContent?.positive?.length ?? 0) +
+              (sentimentContent?.negative?.length ?? 0) +
+              (sentimentContent?.neutral?.length ?? 0);
 
-            const numPositive = sentimentContent.positive.length;
-            const numNegative = sentimentContent.negative.length;
-            const numNeutral = sentimentContent.neutral.length;
-
-            const percentPositive = total
+            numPositive = sentimentContent?.positive?.length ?? 0;
+            numNegative = sentimentContent?.negative?.length ?? 0;
+            numNeutral = sentimentContent?.neutral?.length ?? 0;
+            percentPositive = total
               ? ((numPositive / total) * 100).toFixed(1)
               : 0;
-            const percentNegative = total
+            percentNegative = total
               ? ((numNegative / total) * 100).toFixed(1)
               : 0;
-            const percentNeutral = total
+            percentNeutral = total
               ? ((numNeutral / total) * 100).toFixed(1)
               : 0;
-
-            const Circle = ({ percent, color, size = 60, strokeWidth = 8 }) => { // Thêm props size và strokeWidth
-              const radius = size / 2;
-              const normalizedRadius = radius - strokeWidth / 2;
-              const circumference = normalizedRadius * 2 * Math.PI;
-              const strokeDashoffset = circumference - (percent / 100) * circumference;
-
-              return (
-                <svg height={size} width={size}> {/* Sử dụng size cho chiều cao và chiều rộng */}
-                  <circle
-                    stroke="#e5e7eb"
-                    fill="transparent"
-                    strokeWidth={strokeWidth} // Sử dụng strokeWidth
-                    r={normalizedRadius}
-                    cx={radius}
-                    cy={radius}
-                  />
-                  <circle
-                    stroke={color}
-                    fill="transparent"
-                    strokeWidth={strokeWidth} // Sử dụng strokeWidth
-                    strokeDasharray={circumference + " " + circumference}
-                    style={{ strokeDashoffset, transition: "stroke-dashoffset 0.5s" }}
-                    r={normalizedRadius}
-                    cx={radius}
-                    cy={radius}
-                    strokeLinecap="round"
-                  />
-                  <text
-                    x="50%"
-                    y="50%"
-                    dominantBaseline="middle"
-                    textAnchor="middle"
-                    className="text-base font-semibold" // Tăng kích thước chữ trong vòng tròn
-                  >
-                    {percent}%
-                  </text>
-                </svg>
-              );
-            };
-
-            const SentimentCard = ({ title, percent, count, color }) => (
-              <div className="bg-white rounded-xl shadow-md p-6 flex items-center hover:shadow-lg transition"> {/* Loại bỏ flex-col ở đây */}
-                <div className="flex-shrink-0">
-                  <Circle percent={percent} color={color} size={80} strokeWidth={8} /> {/* Truyền size và strokeWidth lớn hơn */}
-                </div>
-                <div className="ml-6"> {/* Tăng khoảng cách từ hình tròn */}
-                  <p className="text-base text-gray-700 font-medium mb-1">{title}</p> {/* Tăng kích thước và độ đậm của tiêu đề */}
-                  <p className="text-3xl font-bold text-gray-800">{count}</p> {/* Giữ nguyên kích thước số lượng */}
-                </div>
-              </div>
-            );
 
             return (
               <div className="grid grid-cols-3 gap-4 p-6">
@@ -510,20 +481,27 @@ export default function FilterConfession() {
                 {isLoadingSentiment ? (
                   <Loading />
                 ) : (
-                  <div className="p-4 space-y-3 max-h-96 overflow-y-auto bg-gradient-to-b from-green-50 to-green-100">
-                    {sentimentContent.positive.map((text, index) => (
-                      <div
-                        key={index}
-                        className="bg-white p-3 rounded-lg border border-green-200 shadow-sm hover:shadow-md transition-shadow duration-200"
-                      >
-                        {truncateText(text)}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                  sentimentContent && sentimentContent.positive && sentimentContent.positive.length > 0 ? (
+                    <div className="p-4 space-y-3 max-h-96 overflow-y-auto bg-gradient-to-b from-green-50 to-green-100">
+                      {sentimentContent.positive.map((text, index) => (
+                        <div
+                          key={index}
+                          className="bg-white p-3 rounded-lg border border-green-200 shadow-sm hover:shadow-md transition-shadow duration-200"
+                        >
+                          {truncateText(text)}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="p-4 text-gray-500 text-center">
+                      Không có bài viết tích cực nào.
+                    </div>
+                  )
+                )};
               </div>
 
               {/* Tiêu cực */}
+
               <div className="flex flex-col rounded-xl overflow-hidden shadow-md hover:shadow-lg transition-shadow duration-300">
                 <div className="bg-gradient-to-r from-red-400 to-red-600 text-white p-3 text-center">
                   <h2 className="text-lg font-bold">Tiêu cực</h2>
@@ -531,17 +509,23 @@ export default function FilterConfession() {
                 {isLoadingSentiment ? (
                   <Loading />
                 ) : (
-                  <div className="p-4 space-y-3 max-h-96 overflow-y-auto bg-gradient-to-b from-red-50 to-red-100">
-                    {sentimentContent.negative.map((text, index) => (
-                      <div
-                        key={index}
-                        className="bg-white p-3 rounded-lg border border-red-200 shadow-sm hover:shadow-md transition-shadow duration-200"
-                      >
-                        {truncateText(text)}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                  sentimentContent && sentimentContent.negative && sentimentContent.negative.length > 0 ? (
+                    <div className="p-4 space-y-3 max-h-96 overflow-y-auto bg-gradient-to-b from-red-50 to-red-100">
+                      {sentimentContent.negative.map((text, index) => (
+                        <div
+                          key={index}
+                          className="bg-white p-3 rounded-lg border border-red-200 shadow-sm hover:shadow-md transition-shadow duration-200"
+                        >
+                          {truncateText(text)}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="p-4 text-gray-500 text-center">
+                      Không có bài viết tiêu cực nào.
+                    </div>
+                  )
+                )};
               </div>
 
               {/* Trung lập */}
@@ -552,32 +536,36 @@ export default function FilterConfession() {
                 {isLoadingSentiment ? (
                   <Loading />
                 ) : (
-                  <div className="p-4 space-y-3 max-h-96 overflow-y-auto bg-gradient-to-b from-gray-50 to-gray-100">
-                    {sentimentContent.neutral.map((text, index) => (
-                      <div
-                        key={index}
-                        className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-shadow duration-200"
-                      >
-                        {truncateText(text)}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                  sentimentContent && sentimentContent.positive && sentimentContent.positive.length > 0 ? (
+                    <div className="p-4 space-y-3 max-h-96 overflow-y-auto bg-gradient-to-b from-gray-50 to-gray-100">
+                      {sentimentContent.neutral.map((text, index) => (
+                        <div
+                          key={index}
+                          className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-shadow duration-200"
+                        >
+                          {truncateText(text)}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="p-4 text-gray-500 text-center">
+                      Không có bài viết trung lập nào.
+                    </div>
+                  )
+                )};
               </div>
-
             </div>
           </div>
 
           {/* Create a section for the visualization and statistical */}
           <div className="min-h-screen bg-gray-50 p-4">
-
             <h1 className="text-3xl font-extrabold mb-4 text-center bg-clip-text text-transparent 
                           bg-gradient-to-r from-purple-500 via-pink-500 to-red-500 
                           drop-shadow-lg">
               Thống kê cảm xúc
             </h1>
             {sentimentContent && !isLoadingSentiment && (
-              <EmotionStats data={sentimentContent} selected_page={selectedPage} selectedTopic={selectedTopic} startDate={startDate} endDate={endDate} />
+              <EmotionStats data={sentimentContent} startDate={startDate} endDate={endDate} selectedPage={selectedPage} selectedTopic={selectedTopic} />
             )}
           </div>
         </>
