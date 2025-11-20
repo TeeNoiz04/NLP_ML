@@ -4,6 +4,7 @@ import EmotionStats from "./components/EmotionStats";
 import Loading from "./components/Loading";
 import PostList from "./components/PostList";
 import SentimentCard from "./components/SentimentCard";
+import TopicCard from "./components/TopicCard";
 import { MagnifyingGlassIcon } from "@heroicons/react/24/solid";
 
 const initialPages = [
@@ -34,12 +35,17 @@ export default function FilterConfession() {
     negative: [],
     neutral: []
   });
-
+  const [topicsList, setTopicsList] = useState({
+    facility: [],
+    lecturer: [],
+    student: [],
+    program: [],
+  });
   const [data, setData] = useState([]);
   const [isLoadingData, setIsLoadingData] = useState(false);
 
   const [selectedPage, setSelectedPage] = useState(0);
-  const [selectedTopic, setSelectedTopic] = useState(""); 
+  const [selectedTopic, setSelectedTopic] = useState("");
   const [startDate, setStartDate] = useState(undefined);
   const [endDate, setEndDate] = useState(undefined);
   const [error, setError] = useState("");
@@ -77,11 +83,9 @@ export default function FilterConfession() {
 
   // Fetch data function
   const fetchData = async () => {
-    console.log("Starting data fetch...");
     setIsLoadingData(true);
     setError("");
     try {
-      console.log("Fetching data with parameters: " + selectedPage);
       const response = await axios.get(`${API_URL}/posts`, {
         params: {
           page: 1,
@@ -92,7 +96,6 @@ export default function FilterConfession() {
           end_date: endDate,
         },
       });
-      console.log("Data fetch successful:", response.data);
       setData(response.data.posts);
     } catch (err) {
       setError("Lỗi kết nối: " + err.message);
@@ -116,57 +119,73 @@ export default function FilterConfession() {
   };
 
   const shoolSentiment = async () => {
-    console.log("Starting sentiment analysis fetch...");
+
     setIsLoadingSentiment(true);
     setError("");
     try {
       const response = await axios.post(`${API_URL}/sentiment`, { data: data, selectedPage: selectedPage });
       if ((response.data && typeof response.data === 'object')) {
-        console.log("Received sentiment analysis response11:", response.data);
         setSentimentContent(response.data);
       } else {
-        console.error('Invalid response format:', response.data);
         setError("Định dạng dữ liệu không hợp lệ");
       }
     } catch (err) {
-      console.error('Error fetching sentiment:', err);
       setError("Lỗi kết nối: " + err.message);
     } finally {
       setIsLoadingSentiment(false);
     }
   };
-
+  const schoolTopic = async () => {
+    setIsLoadingSentiment(true);
+    setError("");
+    try {
+      const response = await axios.post(`${API_URL}/topic-modeling`, { data: data, selectedPage: selectedPage });
+      setTopicsList(response.data);
+    } catch (err) {
+      setError("Lỗi kết nối: " + err.message);
+    } finally {
+      setIsLoadingSentiment(false);
+    }
+  };
   const handleSearch = async () => {
-    console.log("Handling search...");
     const newData = await fetchData();
     if (newData && newData.total == 0) {
-      console.log("No data available after fetch.");
       setSentimentContent({
         positive: [],
         negative: [],
         neutral: []
       });
+      setTopicsList({
+        facility: [],
+        lecturer: [],
+        student: [],
+        program: []
+      });
     }
   };
   // Fetch initial data on component mount
   useEffect(() => {
-    console.log("Fetching initial data on component mount...");
     fetchData();
   }, []);
 
   // Trigger shoolOverview whenever `data` is updated
   useEffect(() => {
-    console.log("Data updated, triggering overview and sentiment fetch... --- data length:", data.length);
     if (data.length > 0) {
       shoolOverview();
       shoolSentiment();
-    }else if (data.length === 0) {
-      console.log("Data is empty, clearing overview and sentiment content.");
+      schoolTopic();
+    } else if (data.length === 0) {
       setOverViewContent("Không có bài viết nào trong khoảng thời gian đã chọn.");
       setSentimentContent({
         positive: [],
         negative: [],
         neutral: []
+      });
+      setTopicsList({
+        facility: [],
+        lecturer: [],
+        student: [],
+        program: []
       });
     }
 
@@ -419,7 +438,6 @@ export default function FilterConfession() {
       {/* Conditional View Content */}
       {activeView === "sentiment" ? (
         <>
-          {console.log("Tab sentiment Rendering Sentiment Analysis View", sentimentContent)},
           {/* Sentiment Summary Cards */}
           {!isLoadingSentiment && (() => {
             let percentPositive, percentNegative, percentNeutral;
@@ -470,10 +488,67 @@ export default function FilterConfession() {
               </div>
             );
           })()}
+          {!isLoadingSentiment && (() => {
+            let percentLecturer, percentStudent, percentFacility, percentProgram;
+            let numLecturer, numStudent, numFacility, numProgram, total;
+            total =
+              (topicsList?.data?.program?.length ?? 0) +
+              (topicsList?.data?.student?.length ?? 0) +
+              (topicsList?.data?.facility?.length ?? 0) +
+              (topicsList?.data?.lecturer?.length ?? 0);
+
+            numLecturer = topicsList?.data?.lecturer?.length ?? 0;
+            numStudent = topicsList?.data?.student?.length ?? 0;
+            numFacility = topicsList?.data?.facility?.length ?? 0;
+            numProgram = topicsList?.data?.program?.length ?? 0;
+            percentLecturer = total
+              ? ((numLecturer / total) * 100).toFixed(1)
+              : 0;
+            percentStudent = total
+              ? ((numStudent / total) * 100).toFixed(1)
+              : 0;
+            percentFacility = total
+              ? ((numFacility / total) * 100).toFixed(1)
+              : 0;
+            percentProgram = total
+              ? ((numProgram / total) * 100).toFixed(1)
+              : 0;
+            return (
+              <div className="flex flex-col  p-6 bg-white">
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <TopicCard
+                    title="Giảng viên"
+                    percent={percentLecturer}
+                    count={numLecturer}
+                    color="#10b981"
+                  />
+                  <TopicCard
+                    title="Sinh viên"
+                    percent={percentStudent}
+                    count={numStudent}
+                    color="#f97316"
+                  />
+                  <TopicCard
+                    title="Cơ sở vật chất"
+                    percent={percentFacility}
+                    count={numFacility}
+                    color="#3b82f6"
+                  />
+                  <TopicCard
+                    title="Chương trình học"
+                    percent={percentProgram}
+                    count={numProgram}
+                    color="#8b5cf6"
+                  />
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Detailed Sentiment Lists */}
           <div className="p-6">
             <div className="grid grid-cols-3 gap-4">
-              {/* Tích cực */}
               <div className="flex flex-col rounded-xl overflow-hidden shadow-md hover:shadow-lg transition-shadow duration-300">
                 <div className="bg-gradient-to-r from-green-400 to-green-600 text-white p-3 text-center">
                   <h2 className="text-lg font-bold">Tích cực</h2>
@@ -499,9 +574,6 @@ export default function FilterConfession() {
                   )
                 )};
               </div>
-
-              {/* Tiêu cực */}
-
               <div className="flex flex-col rounded-xl overflow-hidden shadow-md hover:shadow-lg transition-shadow duration-300">
                 <div className="bg-gradient-to-r from-red-400 to-red-600 text-white p-3 text-center">
                   <h2 className="text-lg font-bold">Tiêu cực</h2>
@@ -527,8 +599,6 @@ export default function FilterConfession() {
                   )
                 )};
               </div>
-
-              {/* Trung lập */}
               <div className="flex flex-col rounded-xl overflow-hidden shadow-md hover:shadow-lg transition-shadow duration-300">
                 <div className="bg-gradient-to-r from-gray-400 to-gray-600 text-white p-3 text-center">
                   <h2 className="text-lg font-bold">Trung lập</h2>
