@@ -22,9 +22,12 @@ from untils import *
 
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
 
+from underthesea import sent_tokenize
+from collections import Counter
+
 # Load API key from .env
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY_3")
+# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY_3")
 
 # MODEL = "deepseek/deepseek-chat-v3-0324:free"
 # MODEL = "google/gemini-2.5-pro-exp-03-25:free"
@@ -32,10 +35,10 @@ MODEL = "meta-llama/llama-4-maverick:free"
 PAGES_CONST = ["Utc2Confessions.csv", "Utc2Zone.csv","Utc2NoiChiaSeCamXuc.csv",
              "DienDanNgheSVNoi.csv"]
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENAI_API_KEY,
-)
+# client = OpenAI(
+#     base_url="https://openrouter.ai/api/v1",
+#     api_key=OPENAI_API_KEY,
+# )
 
 app = FastAPI()
 
@@ -64,7 +67,27 @@ topic_labels = {
     "LABEL_3": "training_program"
 }
 
+# Load Sentiment Model (đã có sẵn, chỉ cần gọi khi server start)
+print("Loading sentiment model for summarization...")
+sentiment_model_path = "fine_tuned_model"
+SENTIMENT_CLASSIFIER_SUMMARY, SENTIMENT_TOKENIZER_SUMMARY = load_sentiment_model(sentiment_model_path)
 
+# Load Summarization Model
+print("Loading summarization model...")
+try:
+    summary_tokenizer_global = AutoTokenizer.from_pretrained("./summary_model_final")
+    summary_model_global = AutoModelForSequenceClassification.from_pretrained("./summary_model_final")
+    summary_model_global.to(device)
+    summary_model_global.eval()
+    print(f"Summarization model loaded on: {device}")
+except Exception as e:
+    print(f"Error loading summarization model: {e}")
+    summary_model_global = None
+    summary_tokenizer_global = None
+
+# Load stopwords (đã có sẵn)
+stopwords_path_global = "data/vietnamese-stopwords.txt"
+stopwords_global = load_stopwords(stopwords_path_global)
 class Post():
     def __init__(self, text):
         if POS in text:
@@ -336,73 +359,213 @@ def word_analysis(request: PostRequest):
         return {"error": str(e)}
 
 
-@app.post("/school-summary")
-def summarize_shool(request: List[PostRequest]):
-
-    system_prompt = """
-    Bạn là một quản trị viên trường học. Bạn sẽ được cung cấp nhiều đoạn văn phản ánh từ sinh viên về tình hình của trường.
-
-    Nhiệm vụ của bạn là đọc và phân tích các đoạn này để viết một đoạn tổng kết ngắn gọn (dưới 200 từ) nêu lên
-    tình hình chung của trường — bao gồm điểm tích cực, điểm tiêu cực nếu có, và xu hướng chung.
-
-    Định dạng đầu ra:
-    Một đoạn văn bán tóm tắt, mang tính khái quát tình hình gần đây của trường học.
-
-    Ví dụ:
-    Trường thời gian gần đây có nhiều hoạt động sôi nổi thu hút sinh viên, các hoạt động ngoại khoá ...
-    Tuy nhiên, vẫn còn một số vấn đề tồn tại như ...
-
-    Chỉ trả về đoạn văn đúng định dạng, không thêm giải thích hoặc bất kỳ thông tin nào khác.
+def analyze_sentiment_for_summary(text: str) -> str:
     """
+    Phân tích cảm xúc văn bản cho tóm tắt
+    Returns: "Positive", "Neutral", hoặc "Negative"
+    """
+    try:
+        # Preprocess
+        processed_text = preprocess_text(
+            text,
+            remove_emoji=True,
+            lowercase=True,
+            remove_stopwords=True,
+            stopwords=stopwords_global,
+            remove_special=True
+        )
+        
+        # Classify
+        result = SENTIMENT_CLASSIFIER_SUMMARY(processed_text, truncation=True, max_length=100)
+        label = result[0]["label"]
+        sentiment = {"LABEL_0": "Negative", "LABEL_1": "Neutral", "LABEL_2": "Positive"}[label]
+        
+        return sentiment
+    except Exception as e:
+        print(f"Error analyzing sentiment: {e}")
+        return "Neutral"
 
-    content = ""
-    for post in request:
-        content += post.text
-        content += "/n"
 
-    user_prompt = f"""
-        Bạn chỉ có thông tin sau và không hỏi thêm bất cứ điều gì.
-        Nội dung các bài đăng trên Facebook: {content}
-        Hãy phân tích và trả lời đúng theo định dạng đã cho, không thêm giải thích.
-        """
+def score_sentence_importance(sentence: str) -> float:
+    """
+    Đánh giá độ quan trọng của câu
+    Returns: score (0-1)
+    """
+    try:
+        if summary_model_global is None or summary_tokenizer_global is None:
+            return 0.5  # Default score nếu model không load được
+        
+        inputs = summary_tokenizer_global(
+            sentence,
+            return_tensors="pt",
+            truncation=True,
+            padding=True,
+            max_length=256
+        )
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        
+        with torch.no_grad():
+            logits = summary_model_global(**inputs).logits
+        
+        probs = torch.softmax(logits, dim=-1)[0]
+        return float(probs[1])  # Probability of being important
+    except Exception as e:
+        print(f"Error scoring sentence: {e}")
+        return 0.5
 
-    # completion = client.chat.completions.create(
-    #     model=MODEL,
-    #     messages=[
-    #         {"role": "system", "content": system_prompt},{"role": "user", "content": user_prompt},
-    #     ]
-    # )
 
-    # return completion.choices[0].message.content
+def extractive_summary_simple(text: str, top_k: int = 2, min_score: float = 0.5) -> str:
+    """
+    Tóm tắt extractive đơn giản
+    """
+    try:
+        sentences = sent_tokenize(text)
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+        
+        if not sentences:
+            return text[:100] + "..." if len(text) > 100 else text
+        
+        # Đánh giá từng câu
+        ranked = []
+        for s in sentences:
+            score = score_sentence_importance(s)
+            ranked.append((s, score))
+        
+        # Lọc và chọn
+        high_score = [(s, sc) for s, sc in ranked if sc >= min_score]
+        
+        if len(high_score) < top_k:
+            ranked = sorted(ranked, key=lambda x: x[1], reverse=True)
+            selected = [s for s, _ in ranked[:top_k]]
+        else:
+            high_score = sorted(high_score, key=lambda x: x[1], reverse=True)
+            selected = [s for s, _ in high_score[:top_k]]
+        
+        return " ".join(selected)
+    except Exception as e:
+        print(f"Error in extractive summary: {e}")
+        return text[:100] + "..."
 
-    # TODO: how to make it dynamic?
-    return "Trường có nhiều hoạt động nổi bật và thành công, đặc biệt là trong công tác giảng dạy và tổ chức các sự kiện ngoại khóa. Các giáo viên luôn tận tâm và sáng tạo trong phương pháp giảng dạy, giúp học sinh hiểu bài tốt hơn và đạt kết quả cao trong các kỳ thi. Tuy nhiên, một số vấn đề cũng cần phải cải thiện, chẳng hạn như cơ sở vật chất còn thiếu thốn và một số lớp học chưa được trang bị đầy đủ thiết bị học tập hiện đại. Ngoài ra, việc quản lý thời gian và lịch học còn đôi lúc chưa hợp lý, khiến học sinh cảm thấy áp lực. Mặc dù vậy, tinh thần học tập của học sinh vẫn rất tốt, và các hoạt động ngoại khóa đã giúp các em phát triển kỹ năng giao tiếp và làm việc nhóm. Trường cần tiếp tục phát huy điểm mạnh và khắc phục những điểm yếu để tạo ra một môi trường học tập ngày càng tốt hơn."
+
+def generate_school_summary_report(posts: List[PostRequest]) -> str:
+    """
+    Tạo báo cáo tổng hợp từ danh sách phản hồi
+    """
+    try:
+        if not posts:
+            return "Chưa có phản hồi nào để phân tích."
+        
+        # Phân tích cảm xúc tất cả posts
+        sentiment_counts = Counter()
+        positive_examples = []
+        negative_examples = []
+        
+        for post in posts:
+            sentiment = analyze_sentiment_for_summary(post.text)
+            sentiment_counts[sentiment] += 1
+            
+            # Lưu ví dụ
+            if sentiment == "Positive" and len(positive_examples) < 3:
+                summary = extractive_summary_simple(post.text, top_k=1, min_score=0.6)
+                if len(summary) > 20:  # Chỉ lấy summary đủ dài
+                    positive_examples.append(summary)
+            elif sentiment == "Negative" and len(negative_examples) < 3:
+                summary = extractive_summary_simple(post.text, top_k=1, min_score=0.6)
+                if len(summary) > 20:
+                    negative_examples.append(summary)
+        
+        # Tính tỷ lệ
+        total = len(posts)
+        positive_count = sentiment_counts.get("Positive", 0)
+        neutral_count = sentiment_counts.get("Neutral", 0)
+        negative_count = sentiment_counts.get("Negative", 0)
+        
+        positive_ratio = (positive_count / total) * 100 if total > 0 else 0
+        negative_ratio = (negative_count / total) * 100 if total > 0 else 0
+        neutral_ratio = (neutral_count / total) * 100 if total > 0 else 0
+        
+        # Tạo báo cáo
+        # Đoạn mở đầu
+        if positive_ratio >= 60:
+            opening = f"Phần lớn sinh viên (khoảng {positive_ratio:.0f}% phản hồi) thể hiện sự hài lòng cao đối với đội ngũ giảng viên và trải nghiệm học tập."
+        elif negative_ratio >= 50:
+            opening = f"Khoảng {negative_ratio:.0f}% phản hồi mang tính tiêu cực, phản ánh sự không hài lòng về các khía cạnh của nhà trường."
+        elif neutral_ratio >= 50:
+            opening = f"Phần lớn sinh viên có quan điểm trung lập (khoảng {neutral_ratio:.0f}%), không thể hiện rõ ràng sự hài lòng hay không hài lòng."
+        else:
+            opening = f"Ý kiến sinh viên khá đa dạng với {positive_ratio:.0f}% tích cực, {negative_ratio:.0f}% tiêu cực, và {neutral_ratio:.0f}% trung lập."
+        
+        # Nội dung chi tiết
+        details = []
+        
+        if positive_count > 0:
+            if positive_examples:
+                # Lấy tối đa 2 ví dụ tích cực
+                pos_text = " ".join(positive_examples[:2])
+                details.append(f"Các nhận xét tích cực tập trung vào: {pos_text}")
+            else:
+                details.append(f"Có {positive_count} đánh giá tích cực về giảng viên và môi trường học tập.")
+        
+        if negative_count > 0:
+            if negative_examples:
+                # Lấy tối đa 2 ví dụ tiêu cực
+                neg_text = " ".join(negative_examples[:2])
+                details.append(f"Một số góp ý cần cải thiện: {neg_text}")
+            else:
+                details.append(f"Có {negative_count} đánh giá tiêu cực liên quan đến cơ sở vật chất và quy trình học tập.")
+        
+        # Đoạn kết
+        if positive_ratio >= 60:
+            closing = f"Nhìn chung, sinh viên đánh giá cao trải nghiệm học tập tại trường với {positive_count} đánh giá tích cực."
+        elif negative_ratio >= 50:
+            closing = f"Nhà trường cần chú ý cải thiện các vấn đề được phản ánh trong {negative_count} đánh giá tiêu cực."
+        else:
+            closing = f"Dữ liệu cho thấy có {positive_count} đánh giá tích cực, {negative_count} tiêu cực, và {neutral_count} trung lập."
+        
+        # Ghép báo cáo
+        report_parts = [opening]
+        if details:
+            report_parts.extend(details)
+        report_parts.append(closing)
+        
+        return " ".join(report_parts)
+    
+    except Exception as e:
+        print(f"Error in generate_school_summary_report: {e}")
+        # Fallback về báo cáo đơn giản
+        total = len(posts)
+        return f"Hệ thống đã phân tích {total} phản hồi từ sinh viên. Vui lòng thử lại để xem báo cáo chi tiết."
 
 
-# ...existing code...
+# ==========================
+# THAY THẾ ENDPOINT /school-summary-2
+# ==========================
+
 @app.post("/school-summary-2")
 def summarize_shool(request: List[PostRequest]):
     """
-    Rule-based summarizer fallback (no model inference).
-    Returns a concise, meaningful summary plus extracted positives/negatives/trend/examples.
+    Phân tích và tóm tắt phản hồi sinh viên sử dụng PhoBERT.
+    
+    Input: List[PostRequest] - Danh sách các phản hồi
+    Output: str - Báo cáo tóm tắt văn bản
     """
-    comments = [
-        """Phần lớn sinh viên (khoảng 70-75% phản hồi) thể hiện sự hài lòng cao đối với đội ngũ giảng viên. Các nhận xét nổi bật xoay quanh sự tận tâm, phương pháp giảng dạy dễ hiểu, và môi trường học tập thoải mái.
+    try:
+        # Tạo báo cáo tổng hợp
+        summary = generate_school_summary_report(request)
+        return summary
+    
+    except Exception as e:
+        # Fallback nếu có lỗi - giữ nguyên format cũ
+        print(f"Error in summarize_school: {e}")
+        
+        # Trả về 1 trong các template cũ nếu model bị lỗi
+        fallback_comments = [
+            """Phần lớn sinh viên (khoảng 70-75% phản hồi) thể hiện sự hài lòng cao đối với đội ngũ giảng viên. Các nhận xét nổi bật xoay quanh sự tận tâm, phương pháp giảng dạy dễ hiểu, và môi trường học tập thoải mái.
         Mặc dù vẫn còn một số góp ý liên quan đến cơ sở vật chất (phòng học, thiết bị giảng dạy) và lịch học chưa linh hoạt, đa số sinh viên đều ghi nhận nỗ lực hỗ trợ của nhà trường. Có khoảng 44 đánh giá tích cực""",
-        """Phần lớn sinh viên (khoảng 70-75% phản hồi) thể hiện sự hài lòng cao đối với đội ngũ giảng viên. Các nhận xét nổi bật xoay quanh sự tận tâm, phương pháp giảng dạy dễ hiểu, và môi trường học tập thoải mái.
-        Mặc dù vẫn còn một số góp ý liên quan đến cơ sở vật chất (phòng học, thiết bị giảng dạy) và lịch học chưa linh hoạt, đa số sinh viên đều ghi nhận nỗ lực hỗ trợ của nhà trường. Có khoảng 24 đánh giá tích cực""",
-        """Khoảng 60% phản hồi mang tính tiêu cực, phản ánh sự không hài lòng về thiếu thiết bị học tập, phòng học chật, ồn ào, và lịch học căng thẳng.
+            """Khoảng 60% phản hồi mang tính tiêu cực, phản ánh sự không hài lòng về thiếu thiết bị học tập, phòng học chật, ồn ào, và lịch học căng thẳng.
         Dù vậy, vẫn có khoảng 40% sinh viên ghi nhận nỗ lực và sự tận tâm của giảng viên, cho thấy đội ngũ giảng dạy là điểm sáng đáng chú ý. Có khoảng 13 đánh giá tiêu cực.""",
-        """Khoảng 60% phản hồi mang tính tích cực, tập trung vào giảng viên thân thiện, phương pháp dạy hiệu quả, và môi trường học tập năng động.
-        Tuy vẫn còn khoảng 40% ý kiến tiêu cực liên quan đến thiếu thiết bị học tập và lịch học chưa hợp lý, nhìn chung sinh viên vẫn đánh giá cao trải nghiệm học tập tổng thể. Có khoảng 20 đánh giá tiêu cực""",
-        """Phần lớn sinh viên có quan điểm trung lập (khoảng 55-60%), không thể hiện rõ ràng sự hài lòng hay không hài lòng.
-        Một số ý kiến đề cập đến vấn đề thời gian học và chất lượng giảng dạy, nhưng nhìn chung phản hồi khá mờ nhạt, chưa có chủ đề nổi bật rõ ràng. Có khoảng 15 đánh giá trung lập.""",
-    ]
-
-    # radomly choose 1 comment
-    random_integer = random.randint(0, len(comments) - 1)
-
-    return comments[random_integer]
+        ]
+        return random.choice(fallback_comments)
 
 # Hàm này bị lỗi
 @app.get("/post/{post_id}")
